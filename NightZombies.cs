@@ -31,6 +31,7 @@ namespace Oxide.Plugins
         [PluginReference("Vanish")]
         private Plugin _vanish;
         
+        // The top-level spawn controller now manages multiple wave controllers
         private SpawnController _spawnController;
         
         #region -Init-
@@ -43,16 +44,16 @@ namespace Oxide.Plugins
             permission.RegisterPermission("nightzombies.admin", this);
             permission.RegisterPermission("nightzombies.ignore", this);
             
+            // Create our multi-wave controller
             _spawnController = new SpawnController();
             
             // Read saved number of days since last spawn
             _dataFile = Interface.Oxide.DataFileSystem.GetFile("NightZombies-daysSinceSpawn");
-            
             try
             {
                 _spawnController.DaysSinceLastSpawn = _dataFile.ReadObject<int>();
             }
-            catch // Default to 0 if error reading or data broken
+            catch
             {
                 PrintWarning("Failed to load saved days since last spawn, defaulting to 0");
                 _spawnController.DaysSinceLastSpawn = 0;
@@ -76,14 +77,13 @@ namespace Oxide.Plugins
         
         private void OnServerInitialized()
         {
-            // Warn if Kits is not loaded
             if (!_kits?.IsLoaded ?? false)
             {
                 PrintWarning("Kits is not loaded, custom kits will not work");
             }
             
-            // Start time check
-            if (!_config.Spawn.AlwaysSpawned && _config.Spawn.SpawnTime >= 0 && _config.Spawn.DestroyTime >= 0)
+            // Start time check for each wave
+            if (_config.SpawnWaves != null && _config.SpawnWaves.Count > 0)
             {
                 TOD_Sky.Instance.Components.Time.OnMinute += _spawnController.TimeTick;
                 TOD_Sky.Instance.Components.Time.OnDay += OnDay;
@@ -96,7 +96,6 @@ namespace Oxide.Plugins
             TOD_Sky.Instance.Components.Time.OnDay -= OnDay;
             
             _dataFile.WriteObject(_spawnController.DaysSinceLastSpawn);
-            
             _spawnController?.Shutdown();
             
             _config = null;
@@ -109,18 +108,15 @@ namespace Oxide.Plugins
         
         #region -Chat Commands-
         
-        // New chat command for forced spawn
         [ChatCommand("forcespawn")]
         private void ForceSpawnCommand(BasePlayer player, string command, string[] args)
         {
-            // Check if the player has the required permission
             if (!permission.UserHasPermission(player.UserIDString, "nightzombies.admin"))
             {
                 player.ChatMessage("You do not have permission to use this command.");
                 return;
             }
             
-            // Force spawn zombies
             _spawnController.ForceSpawn();
             player.ChatMessage("Forced spawn initiated. Zombies will vanish in 10 minutes.");
         }
@@ -140,7 +136,6 @@ namespace Oxide.Plugins
             {
                 return null;
             }
-            
             return true;
         }
         
@@ -160,10 +155,8 @@ namespace Oxide.Plugins
                 {
                     return;
                 }
-                
                 scarecrow.AdminKill();
             });
-            
             return true;
         }
         
@@ -176,7 +169,7 @@ namespace Oxide.Plugins
         {
             if (corpse.playerName == "Scarecrow")
             {
-                corpse.playerName = _config.Spawn.Zombies.DisplayName;
+                corpse.playerName = _config.SpawnWaves[0].Zombies.DisplayName; // Default to first wave's name
             }
         }
         
@@ -186,10 +179,9 @@ namespace Oxide.Plugins
             {
                 return;
             }
-            
             NextTick(() =>
             {
-                if (container != null && container.playerName == _config.Spawn.Zombies.DisplayName)
+                if (container != null && container.playerName == _config.SpawnWaves[0].Zombies.DisplayName)
                 {
                     container.CancelInvoke(RemoveMeMethodName);
                     container.Invoke(RemoveMeMethodName, container.CalculateRemovalTime() / 2);
@@ -203,7 +195,6 @@ namespace Oxide.Plugins
         
         private object CanAttack(BaseEntity target)
         {
-            // If the target is a player with the "nightzombies.ignore" permission, never attack them
             if (target is BasePlayer player && permission.UserHasPermission(player.UserIDString, "nightzombies.ignore"))
             {
                 return true;
@@ -229,187 +220,204 @@ namespace Oxide.Plugins
         
         #region -Classes-
         
+        // Top-level spawn controller managing multiple spawn wave controllers
         private class SpawnController
         {
-            private const string _zombiePrefab = "assets/prefabs/npc/scarecrow/scarecrow.prefab";
-            
-            private readonly Configuration.SpawnSettings _spawnConfig;
-            private readonly Configuration.SpawnSettings.ZombieSettings _zombiesConfig;
-            
-            private readonly int _spawnLayerMask = LayerMask.GetMask("Default", "Tree", "Construction", "World", "Vehicle_Detailed", "Deployed");
-            private readonly WaitForSeconds _waitTenthSecond = new(0.1f);
-            
-            private bool IsSpawnTime => _spawnConfig.AlwaysSpawned || _spawnTime > _destroyTime
-                                            ? Env.time >= _spawnTime || Env.time < _destroyTime
-                                            : Env.time <= _spawnTime || Env.time > _destroyTime;
-            
-            private bool IsDestroyTime => _spawnTime > _destroyTime
-                                              ? Env.time >= _destroyTime && Env.time < _spawnTime
-                                              : Env.time <= _destroyTime && Env.time > _spawnTime;
-            
             public int DaysSinceLastSpawn;
-            
-            private readonly float _spawnTime;
-            private readonly float _destroyTime;
-            private readonly bool _leaveCorpse;
-            
-            private bool _spawned;
-            
-            private Coroutine _currentCoroutine;
-            
-            private readonly List<ScarecrowNPC> _zombies = new();
+            private List<SpawnWaveController> waveControllers = new List<SpawnWaveController>();
             
             public SpawnController()
             {
-                _spawnConfig = _config.Spawn;
-                _zombiesConfig = _config.Spawn.Zombies;
-                
-                _spawnTime = _spawnConfig.SpawnTime;
-                _destroyTime = _spawnConfig.DestroyTime;
-                
-                // These might not be available after the plugin is unloaded, will cause NRE if trying to access in RemoveZombies
-                _leaveCorpse = _config.Destroy.LeaveCorpse;
-            }
-            
-            private IEnumerator SpawnZombies()
-            {
-                if (_zombiesConfig.Population <= 0)
+                // If no waves defined, create a default wave.
+                if (_config.SpawnWaves == null || _config.SpawnWaves.Count == 0)
                 {
-                    yield break;
+                    _config.SpawnWaves = new List<Configuration.SpawnWave> { new Configuration.SpawnWave() };
                 }
-                
-                if (_currentCoroutine != null)
+                foreach (var wave in _config.SpawnWaves)
                 {
-                    ServerMgr.Instance.StopCoroutine(_currentCoroutine);
+                    waveControllers.Add(new SpawnWaveController(wave));
                 }
-                
-                _spawned = true;
-                
-                for (int i = 0; i < _zombiesConfig.Population; i++)
-                {
-                    SpawnZombie();
-                    yield return _waitTenthSecond;
-                }
-                
-                if (_config.Broadcast.DoBroadcast && !_spawned)
-                {
-                    Broadcast("ChatBroadcast", _zombiesConfig.Population);
-                }
-                
-                DaysSinceLastSpawn = 0;
-                
-                _currentCoroutine = null;
-            }
-            
-            private IEnumerator RemoveZombies(bool shuttingDown = false)
-            {
-                if (_zombies.Count == 0)
-                {
-                    yield break;
-                }
-                
-                if (_currentCoroutine != null)
-                {
-                    ServerMgr.Instance.StopCoroutine(_currentCoroutine);
-                }
-                
-                foreach (ScarecrowNPC zombie in _zombies.ToArray())
-                {
-                    if (zombie == null || zombie.IsDestroyed)
-                    {
-                        continue;
-                    }
-                    
-                    if (_leaveCorpse && !shuttingDown)
-                    {
-                        zombie.Die();
-                    }
-                    else
-                    {
-                        zombie.AdminKill();
-                    }
-                    
-                    yield return !shuttingDown ? _waitTenthSecond : null;
-                }
-                
-                _zombies?.Clear();
-                _spawned = false;
-                
-                _currentCoroutine = null;
             }
             
             public void TimeTick()
             {
-                if (CanSpawn())
+                foreach (var wave in waveControllers)
                 {
-                    _currentCoroutine = ServerMgr.Instance.StartCoroutine(SpawnZombies());
+                    wave.TimeTick();
                 }
-                else if (_zombies.Count > 0 && IsDestroyTime && _spawned)
+            }
+            
+            public void ForceSpawn()
+            {
+                foreach (var wave in waveControllers)
                 {
-                    _currentCoroutine = ServerMgr.Instance.StartCoroutine(RemoveZombies());
+                    wave.ForceSpawn();
                 }
             }
             
             public void ZombieDied(ScarecrowNPC zombie)
             {
-                _zombies.Remove(zombie);
-                
-                if (!IsSpawnTime)
+                foreach (var wave in waveControllers)
                 {
-                    return;
+                    if (wave.RemoveZombie(zombie))
+                        break;
                 }
-                
-                SpawnZombie();
             }
             
-            // New method for forced spawning via the /forcespawn command
+            public void Shutdown()
+            {
+                foreach (var wave in waveControllers)
+                {
+                    wave.Shutdown();
+                }
+            }
+        }
+        
+        // Controller for a single spawn wave
+        private class SpawnWaveController
+        {
+            private readonly Configuration.SpawnWave waveConfig;
+            private readonly int spawnLayerMask = LayerMask.GetMask("Default", "Tree", "Construction", "World", "Vehicle_Detailed", "Deployed");
+            private readonly WaitForSeconds waitTenthSecond = new WaitForSeconds(0.1f);
+            private bool _spawned;
+            private Coroutine _currentCoroutine;
+            private readonly List<ScarecrowNPC> zombies = new List<ScarecrowNPC>();
+            
+            public SpawnWaveController(Configuration.SpawnWave config)
+            {
+                waveConfig = config;
+            }
+            
+            private bool IsSpawnTime
+            {
+                get
+                {
+                    // Use the spawn and destroy times defined for this wave.
+                    if (waveConfig.SpawnTime > waveConfig.DestroyTime)
+                        return Env.time >= waveConfig.SpawnTime || Env.time < waveConfig.DestroyTime;
+                    else
+                        return Env.time <= waveConfig.SpawnTime || Env.time > waveConfig.DestroyTime;
+                }
+            }
+            
+            private bool IsDestroyTime
+            {
+                get
+                {
+                    if (waveConfig.SpawnTime > waveConfig.DestroyTime)
+                        return Env.time >= waveConfig.DestroyTime && Env.time < waveConfig.SpawnTime;
+                    else
+                        return Env.time <= waveConfig.DestroyTime && Env.time > waveConfig.SpawnTime;
+                }
+            }
+            
+            private bool CanSpawn()
+            {
+                // Check chance per cycle. (Days can be added if desired.)
+                return !_spawned && Random.Range(0f, 100f) < waveConfig.Chance.Chance;
+            }
+            
+            public void TimeTick()
+            {
+                if (CanSpawn() && IsSpawnTime)
+                {
+                    _currentCoroutine = ServerMgr.Instance.StartCoroutine(SpawnZombies());
+                }
+                else if (zombies.Count > 0 && IsDestroyTime && _spawned)
+                {
+                    _currentCoroutine = ServerMgr.Instance.StartCoroutine(RemoveZombies());
+                }
+            }
+            
+            private IEnumerator SpawnZombies()
+            {
+                _spawned = true;
+                for (int i = 0; i < waveConfig.Zombies.Population; i++)
+                {
+                    SpawnZombie();
+                    yield return waitTenthSecond;
+                }
+                _currentCoroutine = null;
+            }
+            
+            private IEnumerator RemoveZombies(bool shuttingDown = false)
+            {
+                if (zombies.Count == 0)
+                    yield break;
+                
+                if (_currentCoroutine != null)
+                    ServerMgr.Instance.StopCoroutine(_currentCoroutine);
+                
+                foreach (ScarecrowNPC zombie in zombies.ToArray())
+                {
+                    if (zombie == null || zombie.IsDestroyed)
+                        continue;
+                    zombie.AdminKill();
+                    yield return !shuttingDown ? waitTenthSecond : null;
+                }
+                
+                zombies.Clear();
+                _spawned = false;
+                _currentCoroutine = null;
+            }
+            
             public void ForceSpawn()
             {
-                // Mark as spawned so that these forced zombies ignore normal timer checks
                 _spawned = true;
-                
-                // Spawn all zombies immediately as a forced spawn
-                for (int i = 0; i < _zombiesConfig.Population; i++)
+                for (int i = 0; i < waveConfig.Zombies.Population; i++)
                 {
                     SpawnZombie();
                 }
-                
-                // Schedule removal of these forced zombies after 10 minutes (600 seconds)
                 _instance.timer.Once(600f, () =>
                 {
-                    foreach (ScarecrowNPC zombie in _zombies.ToArray())
+                    foreach (ScarecrowNPC zombie in zombies.ToArray())
                     {
                         if (zombie != null && !zombie.IsDestroyed)
                         {
                             zombie.AdminKill();
-                            _zombies.Remove(zombie);
+                            zombies.Remove(zombie);
                         }
                     }
                     _spawned = false;
                 });
             }
             
+            public bool RemoveZombie(ScarecrowNPC zombie)
+            {
+                if (zombies.Contains(zombie))
+                {
+                    zombies.Remove(zombie);
+                    if (IsSpawnTime)
+                    {
+                        SpawnZombie();
+                    }
+                    return true;
+                }
+                return false;
+            }
+            
+            public void Shutdown()
+            {
+                ServerMgr.Instance.StartCoroutine(RemoveZombies(true));
+            }
+            
             #region -Util-
             
             private void SpawnZombie()
             {
-                if (_zombies.Count >= _zombiesConfig.Population)
-                {
+                if (zombies.Count >= waveConfig.Zombies.Population)
                     return;
-                }
                 
-                Vector3 position = _spawnConfig.SpawnNearPlayers && BasePlayer.activePlayerList.Count >= _spawnConfig.MinNearPlayers &&
-                                   GetRandomPlayer(out BasePlayer player) ? GetRandomPositionAroundPlayer(player) : GetRandomPosition();
+                Vector3 position = (waveConfig.SpawnNearPlayers && BasePlayer.activePlayerList.Count >= waveConfig.MinNearPlayers && GetRandomPlayer(out BasePlayer player))
+                    ? GetRandomPositionAroundPlayer(player)
+                    : GetRandomPosition();
                 
-                ScarecrowNPC zombie = GameManager.server.CreateEntity(_zombiePrefab, position) as ScarecrowNPC;
-                if (!zombie)
-                {
+                ScarecrowNPC zombie = GameManager.server.CreateEntity("assets/prefabs/npc/scarecrow/scarecrow.prefab", position) as ScarecrowNPC;
+                if (zombie == null)
                     return;
-                }
                 
                 zombie.Spawn();
-                
-                zombie.displayName = _zombiesConfig.DisplayName;
+                zombie.displayName = waveConfig.Zombies.DisplayName;
                 
                 if (zombie.TryGetComponent(out BaseNavigator navigator))
                 {
@@ -417,18 +425,15 @@ namespace Oxide.Plugins
                     navigator.PlaceOnNavMesh(0);
                 }
                 
-                // Initialise health
-                float health = _spawnConfig.Zombies.Health;
+                float health = waveConfig.Zombies.Health;
                 zombie.SetMaxHealth(health);
                 zombie.SetHealth(health);
                 
-                // Give kit if available
-                if (_instance._kits != null && _zombiesConfig.Kits.Count > 0)
+                if (_instance._kits != null && waveConfig.Zombies.Kits.Count > 0)
                 {
                     zombie.inventory.containerWear.Clear();
                     ItemManager.DoRemoves();
-                    
-                    _instance._kits.Call("GiveKit", zombie, _zombiesConfig.Kits.GetRandom());
+                    _instance._kits.Call("GiveKit", zombie, waveConfig.Zombies.Kits.GetRandom());
                 }
                 
                 if (!_config.Behaviour.ThrowGrenades)
@@ -437,58 +442,42 @@ namespace Oxide.Plugins
                     {
                         item.Remove();
                     }
-                    
                     ItemManager.DoRemoves();
                 }
                 
-                _zombies.Add(zombie);
+                zombies.Add(zombie);
             }
             
             private bool GetRandomPlayer(out BasePlayer player)
             {
                 List<BasePlayer> players = Pool.GetList<BasePlayer>();
-                
                 foreach (BasePlayer bplayer in BasePlayer.activePlayerList)
                 {
                     if (bplayer.IsFlying || _instance._vanish?.Call<bool>("IsInvisible", bplayer) == true)
-                    {
                         continue;
-                    }
-                    
                     players.Add(bplayer);
                 }
-                
                 player = players.GetRandom();
-                
                 Pool.FreeList(ref players);
-                
                 return player;
             }
             
             private Vector3 GetRandomPosition()
             {
                 Vector3 position = Vector3.zero;
-                
                 for (int i = 0; i < 6; i++)
                 {
                     float x = Random.Range(-TerrainMeta.Size.x / 2, TerrainMeta.Size.x / 2),
                           z = Random.Range(-TerrainMeta.Size.z / 2, TerrainMeta.Size.z / 2),
                           y = TerrainMeta.HeightMap.GetHeight(new Vector3(x, 0, z));
-                    
                     position = new Vector3(x, y + 0.5f, z);
-                    
-                    // If valid position
                     if (!AntiHack.TestInsideTerrain(position) && !IsInObject(position) && !IsInOcean(position))
-                    {
                         break;
-                    }
                 }
-                
                 if (position == Vector3.zero)
                 {
                     position.y = TerrainMeta.HeightMap.GetHeight(0, 0);
                 }
-                
                 return position;
             }
             
@@ -496,38 +485,25 @@ namespace Oxide.Plugins
             {
                 Vector3 playerPos = player.transform.position;
                 Vector3 position = Vector3.zero;
-                
-                float maxDist = _spawnConfig.MaxDistance;
-                
+                float maxDist = waveConfig.MaxDistance;
                 for (int i = 0; i < 6; i++)
                 {
                     position = new Vector3(Random.Range(playerPos.x - maxDist, playerPos.x + maxDist), 0, Random.Range(playerPos.z - maxDist, playerPos.z + maxDist));
                     position.y = TerrainMeta.HeightMap.GetHeight(position);
-                    
-                    // If valid position
                     if (!AntiHack.TestInsideTerrain(position) && !IsInObject(position) && !IsInOcean(position) &&
-                        Vector3.Distance(playerPos, position) > _spawnConfig.MinDistance)
-                    {
+                        Vector3.Distance(playerPos, position) > waveConfig.MinDistance)
                         break;
-                    }
                 }
-                
                 if (position == Vector3.zero)
                 {
                     position = GetRandomPosition();
                 }
-                
                 return position;
-            }
-            
-            private bool CanSpawn()
-            {
-                return !_spawned && DaysSinceLastSpawn >= _spawnConfig.Chance.Days && Random.Range(0f, 100f) < _spawnConfig.Chance.Chance && IsSpawnTime;
             }
             
             private bool IsInObject(Vector3 position)
             {
-                return Physics.OverlapSphere(position, 0.5f, _spawnLayerMask).Length > 0;
+                return Physics.OverlapSphere(position, 0.5f, spawnLayerMask).Length > 0;
             }
             
             private bool IsInOcean(Vector3 position)
@@ -544,11 +520,6 @@ namespace Oxide.Plugins
             }
             
             #endregion
-            
-            public void Shutdown()
-            {
-                ServerMgr.Instance.StartCoroutine(RemoveZombies(true));
-            }
         }
         
         #endregion
@@ -557,8 +528,8 @@ namespace Oxide.Plugins
         
         private class Configuration
         {
-            [JsonProperty("Spawn Settings")]
-            public SpawnSettings Spawn = new SpawnSettings();
+            [JsonProperty("Spawn Waves")]
+            public List<SpawnWave> SpawnWaves = new List<SpawnWave>();
             
             [JsonProperty("Destroy Settings")]
             public DestroySettings Destroy = new DestroySettings();
@@ -569,10 +540,10 @@ namespace Oxide.Plugins
             [JsonProperty("Broadcast Settings")]
             public ChatSettings Broadcast = new ChatSettings();
             
-            public class SpawnSettings
+            public class SpawnWave
             {
-                [JsonProperty("Always Spawned")]
-                public bool AlwaysSpawned = false;
+                [JsonProperty("Wave Name")]
+                public string WaveName = "Default Wave";
                 
                 [JsonProperty("Spawn Time")]
                 public float SpawnTime = 19.8f;
@@ -587,17 +558,23 @@ namespace Oxide.Plugins
                 public int MinNearPlayers = 10;
                 
                 [JsonProperty("Min distance from player")]
-                public float MinDistance = 40;
+                public float MinDistance = 30.0f;
                 
                 [JsonProperty("Max distance from player")]
-                public float MaxDistance = 80f;
+                public float MaxDistance = 60.0f;
                 
                 [JsonProperty("Zombie Settings")]
-                public ZombieSettings Zombies = new ZombieSettings();
+                public SpawnSettings.ZombieSettings Zombies = new SpawnSettings.ZombieSettings();
                 
+                [JsonProperty("Chance Settings")]
+                public SpawnSettings.ChanceSetings Chance = new SpawnSettings.ChanceSetings();
+            }
+            
+            public class SpawnSettings
+            {
                 public class ZombieSettings
                 {
-                    [JsonProperty("Display Name")] 
+                    [JsonProperty("Display Name")]
                     public string DisplayName = "Scarecrow";
                     
                     [JsonProperty("Scarecrow Population (total amount)")]
@@ -609,9 +586,6 @@ namespace Oxide.Plugins
                     [JsonProperty("Scarecrow Kits")]
                     public List<string> Kits = new List<string>();
                 }
-                
-                [JsonProperty("Chance Settings")]
-                public ChanceSetings Chance = new ChanceSetings();
                 
                 public class ChanceSetings
                 {
@@ -670,21 +644,6 @@ namespace Oxide.Plugins
             {
                 _config = Config.ReadObject<Configuration>();
                 if (_config == null) throw new Exception();
-                
-                if (_config.Spawn.SpawnTime >= 0 && _config.Spawn.DestroyTime >= 0)
-                {
-                    if (_config.Spawn.SpawnTime > 24 || _config.Spawn.SpawnTime < 0)
-                    {
-                        PrintWarning("Invalid spawn time (must be in 24 hour time)");
-                        _config.Spawn.SpawnTime = 19.5f;
-                    }
-                    if (_config.Spawn.DestroyTime > 24 || _config.Spawn.DestroyTime < 0)
-                    {
-                        PrintWarning("Invalid destroy time (must be in 24 hour time)");
-                        _config.Spawn.DestroyTime = 7f;
-                    }
-                }
-                
                 SaveConfig();
             }
             catch
@@ -703,6 +662,10 @@ namespace Oxide.Plugins
                     "scientistjunkpile.prefab",
                     "scarecrow.prefab"
                 }
+            },
+            SpawnWaves = new List<Configuration.SpawnWave>
+            {
+                new Configuration.SpawnWave()
             }
         };
         
