@@ -2,34 +2,75 @@
 
 ```json
 {
-  "Spawn Settings": {
-    "Spawn near players": false,
-    "Min pop for near player spawn": 10,
-    "Min distance from player": 30.0,
-    "Max distance from player": 60.0,
-    "Spawn Time": 19.8,
-    "Destroy Time": 7.3,
-    "Zombie Settings": {
-      "Scarecrow Population (total amount)": 50,
-      "Scarecrow Health": 200.0,
-      "Scarecrow Kits": [
-        "kitname"
-      ]
+  "Spawn Waves": [
+    {
+      "Wave Name": "Night Wave",
+      "Spawn Time": 19.8,
+      "Destroy Time": 7.3,
+      "Spawn near players": true,
+      "Min pop for near player spawn": 10,
+      "Min distance from player": 30.0,
+      "Max distance from player": 60.0,
+      "Zombie Settings": {
+        "Display Name": "Scarecrow",
+        "Scarecrow Population (total amount)": 50,
+        "Scarecrow Health": 200.0,
+        "Scarecrow Kits": [ "defaultkit" ]
+      },
+      "Chance Settings": {
+        "Chance per cycle": 100.0,
+        "Days betewen spawn": 0
+      }
     },
-    "Chance Settings": {
-      "Chance per cycle": 100.0,
-      "Days betewen spawn": 0
+    {
+      "Wave Name": "Dawn Wave",
+      "Spawn Time": 6.0,
+      "Destroy Time": 8.0,
+      "Spawn near players": false,
+      "Min pop for near player spawn": 0,
+      "Min distance from player": 40.0,
+      "Max distance from player": 80.0,
+      "Zombie Settings": {
+        "Display Name": "Dawn Scarecrow",
+        "Scarecrow Population (total amount)": 30,
+        "Scarecrow Health": 150.0,
+        "Scarecrow Kits": [ "dawnkit" ]
+      },
+      "Chance Settings": {
+        "Chance per cycle": 50.0,
+        "Days betewen spawn": 1
+      }
+    },
+    {
+      "Wave Name": "Midnight Wave",
+      "Spawn Time": 0.0,
+      "Destroy Time": 1.0,
+      "Spawn near players": true,
+      "Min pop for near player spawn": 5,
+      "Min distance from player": 20.0,
+      "Max distance from player": 50.0,
+      "Zombie Settings": {
+        "Display Name": "Midnight Scarecrow",
+        "Scarecrow Population (total amount)": 40,
+        "Scarecrow Health": 180.0,
+        "Scarecrow Kits": [ "midnightkit" ]
+      },
+      "Chance Settings": {
+        "Chance per cycle": 75.0,
+        "Days betewen spawn": 0
+      }
     }
-  },
+  ],
   "Destroy Settings": {
-    "Leave Corpse, when destroyed (can cause more lag if true)": false,
+    "Leave Corpse, when destroyed": false,
     "Leave Corpse, when killed by player": true,
-    "Half body bag despawn time": true,
-    "Quick destroy corpses": true
+    "Spawn Loot": true,
+    "Half bodybag despawn time": true
   },
   "Behaviour Settings": {
     "Attack sleeping players": false,
     "Zombies attacked by outpost sentries": true,
+    "Throw Grenades": true,
     "Ignore Human NPCs": true,
     "Ignored entities (full entity shortname)": [
       "scientistjunkpile.prefab",
@@ -37,7 +78,7 @@
     ]
   },
   "Broadcast Settings": {
-    "Broadcast spawn amount": false,
+    "Broadcast spawn amount": false
   }
 }
 ```
@@ -50,6 +91,25 @@
 * **Max distance from player** - When spawning near players, this is the maximum distance that zombies are allowed to spawn from the player.
 * **Spawn Time** - The in-game time at which zombies will appear.
 * **Destroy Time** - The in-game time at which zombies will disappear.
+
+### Spawn Waves
+* **Wave Name - A unique name for the spawn wave.
+* **Spawn Time - The in-game time at which this wave of zombies will appear.
+* **Destroy Time - The in-game time at which zombies in this wave will be despawned.
+* **Spawn near players - Determines whether zombies in this wave will spawn near players (if true) or randomly around the map.
+* **Min pop for near player spawn - Minimum number of players on the server for a near-player spawn to occur.
+* **Min distance from player - The minimum allowed distance for zombies to spawn from a player.
+* **Max distance from player - The maximum allowed distance for zombies to spawn from a player.
+
+### Wave-Specific Settings
+* Zombie Settings
+  * **Display Name – The name shown for zombies in this wave.
+  * **Scarecrow Population (total amount) – Total number of zombies to spawn in this wave.
+  * **Scarecrow Health – Health value for each zombie in this wave.
+  * **Scarecrow Kits – A list of kits to assign to zombies (if applicable).
+* Chance Settings
+  * **Chance per cycle – The percentage chance that zombies in this wave will spawn each spawn attempt.
+  * **Days betewen spawn – The number of days between spawn attempts (if you want to throttle spawning over time).
 
 #### Chance Settings
 
@@ -69,6 +129,7 @@
 
 ## Chat Commands
 * **/forcespawn**: Forces an immediate zombie spawn.
+* **/despawnall**: Immediately despawns all zombies (and their corpses) across all spawn waves. Requires the nightzombies.admin permission.
 
 ### Behaviour Settings
 
