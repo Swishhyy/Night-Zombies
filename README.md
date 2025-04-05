@@ -64,10 +64,11 @@
 * **Quick destroy corpses** - Are corpses cleaned up after 10 seconds.
 
 ## Permissions
-- **nightzombies.admin**: Allows users to execute the `/forcespawn` chat command.
-- **nightzombies.ignore**: Scarecrows will not attack players with this permission.
+* **nightzombies.admin**: Allows users to execute the `/forcespawn` chat command.
+* **nightzombies.ignore**: Scarecrows will not attack players with this permission.
+
 ## Chat Commands
-- **/forcespawn**: Forces an immediate zombie spawn.
+* **/forcespawn**: Forces an immediate zombie spawn.
 
 ### Behaviour Settings
 
