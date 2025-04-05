@@ -13,7 +13,7 @@ using Newtonsoft.Json;
 
 namespace Oxide.Plugins
 {
-    [Info("Night Zombies", "0x89A", "3.5.1")]
+    [Info("Night Zombies", "0x89A", "3.5.")]
     [Description("Spawns and kills zombies at set times")]
     class NightZombies : RustPlugin
     {
@@ -369,7 +369,6 @@ namespace Oxide.Plugins
 
                 // Schedule removal of these forced zombies after 10 minutes (600 seconds)
                 _instance.timer.Once(600f, () => {
-                {
                     foreach (ScarecrowNPC zombie in _zombies.ToArray())
                     {
                         if (zombie != null && !zombie.IsDestroyed)
