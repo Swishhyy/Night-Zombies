@@ -368,7 +368,7 @@ namespace Oxide.Plugins
                 }
 
                 // Schedule removal of these forced zombies after 10 minutes (600 seconds)
-                timer.Once(600f, () =>
+                _instance.timer.Once(600f, () => {
                 {
                     foreach (ScarecrowNPC zombie in _zombies.ToArray())
                     {
