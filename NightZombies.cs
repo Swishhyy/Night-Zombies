@@ -1,19 +1,14 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
-
 using UnityEngine;
 using Random = UnityEngine.Random;
 using Physics = UnityEngine.Physics;
-
 using Oxide.Core;
 using Oxide.Core.Plugins;
 using Oxide.Core.Configuration;
-
 using ConVar;
-
 using Pool = Facepunch.Pool;
-
 using Newtonsoft.Json;
 
 namespace Oxide.Plugins
@@ -43,17 +38,20 @@ namespace Oxide.Plugins
         private void Init()
         {
             _instance = this;
-
+            
+            // Register the admin permission
+            permission.RegisterPermission("nightzombies.admin", this);
+            
             _spawnController = new SpawnController();
             
-            //Read saved number of days since last spawn
+            // Read saved number of days since last spawn
             _dataFile = Interface.Oxide.DataFileSystem.GetFile("NightZombies-daysSinceSpawn");
 
             try
             {
                 _spawnController.DaysSinceLastSpawn = _dataFile.ReadObject<int>();
             }
-            catch //Default to 0 if error reading or data broken
+            catch // Default to 0 if error reading or data broken
             {
                 PrintWarning("Failed to load saved days since last spawn, defaulting to 0");
                 _spawnController.DaysSinceLastSpawn = 0;
@@ -77,13 +75,13 @@ namespace Oxide.Plugins
         
         private void OnServerInitialized()
         {
-            //Warn if kits is not loaded
+            // Warn if Kits is not loaded
             if (!_kits?.IsLoaded ?? false)
             {
                 PrintWarning("Kits is not loaded, custom kits will not work");
             }
             
-            //Start time check
+            // Start time check
             if (!_config.Spawn.AlwaysSpawned && _config.Spawn.SpawnTime >= 0 && _config.Spawn.DestroyTime >= 0)
             {
                 TOD_Sky.Instance.Components.Time.OnMinute += _spawnController.TimeTick;
@@ -105,7 +103,27 @@ namespace Oxide.Plugins
         }
 
         private void OnDay() => _spawnController.DaysSinceLastSpawn++;
+        
+        #endregion
 
+        #region -Chat Commands-
+        
+        // New chat command for forced spawn
+        [ChatCommand("forcespawn")]
+        private void ForceSpawnCommand(BasePlayer player, string command, string[] args)
+        {
+            // Check if the player has the required permission
+            if (!permission.UserHasPermission(player.UserIDString, "nightzombies.admin"))
+            {
+                player.ChatMessage("You do not have permission to use this command.");
+                return;
+            }
+
+            // Force spawn zombies
+            _spawnController.ForceSpawn();
+            player.ChatMessage("Forced spawn initiated. Zombies will vanish in 10 minutes.");
+        }
+        
         #endregion
 
         #region -Oxide Hooks-
@@ -337,6 +355,33 @@ namespace Oxide.Plugins
                 SpawnZombie();
             }
 
+            // New method for forced spawning via the /forcespawn command
+            public void ForceSpawn()
+            {
+                // Mark as spawned so that these forced zombies ignore normal timer checks
+                _spawned = true;
+
+                // Spawn all zombies immediately as a forced spawn
+                for (int i = 0; i < _zombiesConfig.Population; i++)
+                {
+                    SpawnZombie();
+                }
+
+                // Schedule removal of these forced zombies after 10 minutes (600 seconds)
+                timer.Once(600f, () =>
+                {
+                    foreach (ScarecrowNPC zombie in _zombies.ToArray())
+                    {
+                        if (zombie != null && !zombie.IsDestroyed)
+                        {
+                            zombie.AdminKill();
+                            _zombies.Remove(zombie);
+                        }
+                    }
+                    _spawned = false;
+                });
+            }
+
             #region -Util-
 
             private void SpawnZombie()
@@ -365,12 +410,12 @@ namespace Oxide.Plugins
                     navigator.PlaceOnNavMesh(0);
                 }
 
-                //Initialise health
+                // Initialise health
                 float health = _spawnConfig.Zombies.Health;
                 zombie.SetMaxHealth(health);
                 zombie.SetHealth(health);
 
-                //Give kit
+                // Give kit if available
                 if (_instance._kits != null && _zombiesConfig.Kits.Count > 0)
                 {
                     zombie.inventory.containerWear.Clear();
