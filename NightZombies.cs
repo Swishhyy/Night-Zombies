@@ -13,7 +13,7 @@ using Newtonsoft.Json;
 
 namespace Oxide.Plugins
 {
-    [Info("Night Zombies", "0x89A", "3.5.2")]
+    [Info("Night Zombies", "0x89A", "3.6.0")]
     [Description("Spawns and kills zombies at set times")]
     class NightZombies : RustPlugin
     {
@@ -24,13 +24,13 @@ namespace Oxide.Plugins
         private static NightZombies _instance;
         private static Configuration _config;
         private DynamicConfigFile _dataFile;
-
+        
         [PluginReference("Kits")]
         private Plugin _kits;
-
+        
         [PluginReference("Vanish")]
         private Plugin _vanish;
-
+        
         private SpawnController _spawnController;
         
         #region -Init-
@@ -39,14 +39,15 @@ namespace Oxide.Plugins
         {
             _instance = this;
             
-            // Register the admin permission
+            // Register permissions
             permission.RegisterPermission("nightzombies.admin", this);
+            permission.RegisterPermission("nightzombies.ignore", this);
             
             _spawnController = new SpawnController();
             
             // Read saved number of days since last spawn
             _dataFile = Interface.Oxide.DataFileSystem.GetFile("NightZombies-daysSinceSpawn");
-
+            
             try
             {
                 _spawnController.DaysSinceLastSpawn = _dataFile.ReadObject<int>();
@@ -56,17 +57,17 @@ namespace Oxide.Plugins
                 PrintWarning("Failed to load saved days since last spawn, defaulting to 0");
                 _spawnController.DaysSinceLastSpawn = 0;
             }
-
+            
             if (_config.Behaviour.SentriesAttackZombies)
             {
                 Unsubscribe(nameof(OnTurretTarget));
             }
-
+            
             if (_config.Destroy.SpawnLoot)
             {
                 Unsubscribe(nameof(OnCorpsePopulate));
             }
-
+            
             if (_config.Behaviour.Ignored.Count == 0 && !_config.Behaviour.IgnoreHumanNpc && _config.Behaviour.AttackSleepers)
             {
                 Unsubscribe(nameof(OnNpcTarget));
@@ -93,19 +94,19 @@ namespace Oxide.Plugins
         {
             TOD_Sky.Instance.Components.Time.OnMinute -= _spawnController.TimeTick;
             TOD_Sky.Instance.Components.Time.OnDay -= OnDay;
-
+            
             _dataFile.WriteObject(_spawnController.DaysSinceLastSpawn);
-
+            
             _spawnController?.Shutdown();
-
+            
             _config = null;
             _instance = null;
         }
-
+        
         private void OnDay() => _spawnController.DaysSinceLastSpawn++;
         
         #endregion
-
+        
         #region -Chat Commands-
         
         // New chat command for forced spawn
@@ -118,21 +119,21 @@ namespace Oxide.Plugins
                 player.ChatMessage("You do not have permission to use this command.");
                 return;
             }
-
+            
             // Force spawn zombies
             _spawnController.ForceSpawn();
             player.ChatMessage("Forced spawn initiated. Zombies will vanish in 10 minutes.");
         }
         
         #endregion
-
+        
         #region -Oxide Hooks-
-
+        
         private object OnNpcTarget(ScarecrowNPC npc, BaseEntity target)
         {
             return CanAttack(target);
         }
-
+        
         private object OnTurretTarget(NPCAutoTurret turret, ScarecrowNPC entity)
         {
             if (entity == null)
@@ -142,12 +143,12 @@ namespace Oxide.Plugins
             
             return true;
         }
-
+        
         private object OnPlayerDeath(ScarecrowNPC scarecrow, HitInfo info)
         {
             Effect.server.Run(DeathSound, scarecrow.transform.position);
             _spawnController.ZombieDied(scarecrow);
-
+            
             if (_config.Destroy.LeaveCorpseKilled)
             {
                 return null;
@@ -159,18 +160,18 @@ namespace Oxide.Plugins
                 {
                     return;
                 }
-
+                
                 scarecrow.AdminKill();
             });
-                
+            
             return true;
         }
-
+        
         private BaseCorpse OnCorpsePopulate(ScarecrowNPC npcPlayer, NPCPlayerCorpse corpse)
         {
             return corpse;
         }
-
+        
         private void OnEntitySpawned(NPCPlayerCorpse corpse)
         {
             if (corpse.playerName == "Scarecrow")
@@ -195,47 +196,53 @@ namespace Oxide.Plugins
                 }
             });
         }
-
+        
         #endregion
-
+        
         #region -Helpers-
-
+        
         private object CanAttack(BaseEntity target)
         {
-            if (_config.Behaviour.Ignored.Contains(target.ShortPrefabName) || 
-                (_config.Behaviour.IgnoreHumanNpc && HumanNPCCheck(target)) || 
-                (!_config.Behaviour.AttackSleepers && target is BasePlayer player && player.IsSleeping()))
+            // If the target is a player with the "nightzombies.ignore" permission, never attack them
+            if (target is BasePlayer player && permission.UserHasPermission(player.UserIDString, "nightzombies.ignore"))
+            {
+                return true;
+            }
+            
+            if (_config.Behaviour.Ignored.Contains(target.ShortPrefabName) ||
+                (_config.Behaviour.IgnoreHumanNpc && HumanNPCCheck(target)) ||
+                (!_config.Behaviour.AttackSleepers && target is BasePlayer player2 && player2.IsSleeping()))
             {
                 return true;
             }
             
             return null;
         }
-
+        
         private bool HumanNPCCheck(BaseEntity target)
         {
             return target is BasePlayer player && !player.userID.IsSteamId() && target is not ScientistNPC &&
                    target is not ScarecrowNPC;
         }
-
+        
         #endregion
-
+        
         #region -Classes-
-
+        
         private class SpawnController
         {
             private const string _zombiePrefab = "assets/prefabs/npc/scarecrow/scarecrow.prefab";
-
+            
             private readonly Configuration.SpawnSettings _spawnConfig;
             private readonly Configuration.SpawnSettings.ZombieSettings _zombiesConfig;
             
             private readonly int _spawnLayerMask = LayerMask.GetMask("Default", "Tree", "Construction", "World", "Vehicle_Detailed", "Deployed");
             private readonly WaitForSeconds _waitTenthSecond = new(0.1f);
-
+            
             private bool IsSpawnTime => _spawnConfig.AlwaysSpawned || _spawnTime > _destroyTime
                                             ? Env.time >= _spawnTime || Env.time < _destroyTime
                                             : Env.time <= _spawnTime || Env.time > _destroyTime;
-
+            
             private bool IsDestroyTime => _spawnTime > _destroyTime
                                               ? Env.time >= _destroyTime && Env.time < _spawnTime
                                               : Env.time <= _destroyTime && Env.time > _spawnTime;
@@ -247,7 +254,7 @@ namespace Oxide.Plugins
             private readonly bool _leaveCorpse;
             
             private bool _spawned;
-
+            
             private Coroutine _currentCoroutine;
             
             private readonly List<ScarecrowNPC> _zombies = new();
@@ -263,7 +270,7 @@ namespace Oxide.Plugins
                 // These might not be available after the plugin is unloaded, will cause NRE if trying to access in RemoveZombies
                 _leaveCorpse = _config.Destroy.LeaveCorpse;
             }
-
+            
             private IEnumerator SpawnZombies()
             {
                 if (_zombiesConfig.Population <= 0)
@@ -277,7 +284,7 @@ namespace Oxide.Plugins
                 }
                 
                 _spawned = true;
-
+                
                 for (int i = 0; i < _zombiesConfig.Population; i++)
                 {
                     SpawnZombie();
@@ -288,19 +295,19 @@ namespace Oxide.Plugins
                 {
                     Broadcast("ChatBroadcast", _zombiesConfig.Population);
                 }
-
+                
                 DaysSinceLastSpawn = 0;
-
+                
                 _currentCoroutine = null;
             }
-
+            
             private IEnumerator RemoveZombies(bool shuttingDown = false)
             {
                 if (_zombies.Count == 0)
                 {
                     yield break;
                 }
-
+                
                 if (_currentCoroutine != null)
                 {
                     ServerMgr.Instance.StopCoroutine(_currentCoroutine);
@@ -312,7 +319,7 @@ namespace Oxide.Plugins
                     {
                         continue;
                     }
-
+                    
                     if (_leaveCorpse && !shuttingDown)
                     {
                         zombie.Die();
@@ -321,16 +328,16 @@ namespace Oxide.Plugins
                     {
                         zombie.AdminKill();
                     }
-
+                    
                     yield return !shuttingDown ? _waitTenthSecond : null;
                 }
-
+                
                 _zombies?.Clear();
                 _spawned = false;
-
+                
                 _currentCoroutine = null;
             }
-
+            
             public void TimeTick()
             {
                 if (CanSpawn())
@@ -342,7 +349,7 @@ namespace Oxide.Plugins
                     _currentCoroutine = ServerMgr.Instance.StartCoroutine(RemoveZombies());
                 }
             }
-
+            
             public void ZombieDied(ScarecrowNPC zombie)
             {
                 _zombies.Remove(zombie);
@@ -351,24 +358,25 @@ namespace Oxide.Plugins
                 {
                     return;
                 }
-
+                
                 SpawnZombie();
             }
-
+            
             // New method for forced spawning via the /forcespawn command
             public void ForceSpawn()
             {
                 // Mark as spawned so that these forced zombies ignore normal timer checks
                 _spawned = true;
-
+                
                 // Spawn all zombies immediately as a forced spawn
                 for (int i = 0; i < _zombiesConfig.Population; i++)
                 {
                     SpawnZombie();
                 }
-
+                
                 // Schedule removal of these forced zombies after 10 minutes (600 seconds)
-                _instance.timer.Once(600f, () => {
+                _instance.timer.Once(600f, () =>
+                {
                     foreach (ScarecrowNPC zombie in _zombies.ToArray())
                     {
                         if (zombie != null && !zombie.IsDestroyed)
@@ -380,19 +388,19 @@ namespace Oxide.Plugins
                     _spawned = false;
                 });
             }
-
+            
             #region -Util-
-
+            
             private void SpawnZombie()
             {
                 if (_zombies.Count >= _zombiesConfig.Population)
                 {
                     return;
                 }
-
-                Vector3 position = _spawnConfig.SpawnNearPlayers && BasePlayer.activePlayerList.Count >= _spawnConfig.MinNearPlayers && 
+                
+                Vector3 position = _spawnConfig.SpawnNearPlayers && BasePlayer.activePlayerList.Count >= _spawnConfig.MinNearPlayers &&
                                    GetRandomPlayer(out BasePlayer player) ? GetRandomPositionAroundPlayer(player) : GetRandomPosition();
-
+                
                 ScarecrowNPC zombie = GameManager.server.CreateEntity(_zombiePrefab, position) as ScarecrowNPC;
                 if (!zombie)
                 {
@@ -402,131 +410,131 @@ namespace Oxide.Plugins
                 zombie.Spawn();
                 
                 zombie.displayName = _zombiesConfig.DisplayName;
-
+                
                 if (zombie.TryGetComponent(out BaseNavigator navigator))
                 {
                     navigator.ForceToGround();
                     navigator.PlaceOnNavMesh(0);
                 }
-
+                
                 // Initialise health
                 float health = _spawnConfig.Zombies.Health;
                 zombie.SetMaxHealth(health);
                 zombie.SetHealth(health);
-
+                
                 // Give kit if available
                 if (_instance._kits != null && _zombiesConfig.Kits.Count > 0)
                 {
                     zombie.inventory.containerWear.Clear();
                     ItemManager.DoRemoves();
-
+                    
                     _instance._kits.Call("GiveKit", zombie, _zombiesConfig.Kits.GetRandom());
                 }
-
+                
                 if (!_config.Behaviour.ThrowGrenades)
                 {
                     foreach (Item item in zombie.inventory.FindItemsByItemID(GrenadeItemId))
                     {
                         item.Remove();
                     }
-
+                    
                     ItemManager.DoRemoves();
                 }
-
+                
                 _zombies.Add(zombie);
             }
-
+            
             private bool GetRandomPlayer(out BasePlayer player)
             {
                 List<BasePlayer> players = Pool.GetList<BasePlayer>();
-
+                
                 foreach (BasePlayer bplayer in BasePlayer.activePlayerList)
                 {
                     if (bplayer.IsFlying || _instance._vanish?.Call<bool>("IsInvisible", bplayer) == true)
                     {
                         continue;
                     }
-
+                    
                     players.Add(bplayer);
                 }
-
+                
                 player = players.GetRandom();
-
+                
                 Pool.FreeList(ref players);
                 
                 return player;
             }
-
+            
             private Vector3 GetRandomPosition()
             {
                 Vector3 position = Vector3.zero;
-
+                
                 for (int i = 0; i < 6; i++)
                 {
                     float x = Random.Range(-TerrainMeta.Size.x / 2, TerrainMeta.Size.x / 2),
                           z = Random.Range(-TerrainMeta.Size.z / 2, TerrainMeta.Size.z / 2),
                           y = TerrainMeta.HeightMap.GetHeight(new Vector3(x, 0, z));
-
+                    
                     position = new Vector3(x, y + 0.5f, z);
-
+                    
                     // If valid position
                     if (!AntiHack.TestInsideTerrain(position) && !IsInObject(position) && !IsInOcean(position))
                     {
                         break;
                     }
                 }
-
+                
                 if (position == Vector3.zero)
                 {
                     position.y = TerrainMeta.HeightMap.GetHeight(0, 0);
                 }
-
+                
                 return position;
             }
-
+            
             private Vector3 GetRandomPositionAroundPlayer(BasePlayer player)
             {
                 Vector3 playerPos = player.transform.position;
                 Vector3 position = Vector3.zero;
-
+                
                 float maxDist = _spawnConfig.MaxDistance;
                 
                 for (int i = 0; i < 6; i++)
                 {
                     position = new Vector3(Random.Range(playerPos.x - maxDist, playerPos.x + maxDist), 0, Random.Range(playerPos.z - maxDist, playerPos.z + maxDist));
                     position.y = TerrainMeta.HeightMap.GetHeight(position);
-
+                    
                     // If valid position
-                    if (!AntiHack.TestInsideTerrain(position) && !IsInObject(position) && !IsInOcean(position) && 
+                    if (!AntiHack.TestInsideTerrain(position) && !IsInObject(position) && !IsInOcean(position) &&
                         Vector3.Distance(playerPos, position) > _spawnConfig.MinDistance)
                     {
                         break;
                     }
                 }
-
+                
                 if (position == Vector3.zero)
                 {
                     position = GetRandomPosition();
                 }
-
+                
                 return position;
-            } 
-
+            }
+            
             private bool CanSpawn()
             {
                 return !_spawned && DaysSinceLastSpawn >= _spawnConfig.Chance.Days && Random.Range(0f, 100f) < _spawnConfig.Chance.Chance && IsSpawnTime;
             }
-
+            
             private bool IsInObject(Vector3 position)
             {
                 return Physics.OverlapSphere(position, 0.5f, _spawnLayerMask).Length > 0;
             }
-
+            
             private bool IsInOcean(Vector3 position)
             {
                 return WaterLevel.GetWaterDepth(position, true, true) > 0.25f;
             }
-
+            
             private void Broadcast(string key, params object[] values)
             {
                 foreach (BasePlayer player in BasePlayer.activePlayerList)
@@ -536,57 +544,57 @@ namespace Oxide.Plugins
             }
             
             #endregion
-
+            
             public void Shutdown()
             {
                 ServerMgr.Instance.StartCoroutine(RemoveZombies(true));
             }
         }
-
+        
         #endregion
         
         #region -Configuration-
-
+        
         private class Configuration
         {
             [JsonProperty("Spawn Settings")]
             public SpawnSettings Spawn = new SpawnSettings();
-
+            
             [JsonProperty("Destroy Settings")]
             public DestroySettings Destroy = new DestroySettings();
-
+            
             [JsonProperty("Behaviour Settings")]
             public BehaviourSettings Behaviour = new BehaviourSettings();
-
+            
             [JsonProperty("Broadcast Settings")]
             public ChatSettings Broadcast = new ChatSettings();
-
+            
             public class SpawnSettings
             {
                 [JsonProperty("Always Spawned")]
                 public bool AlwaysSpawned = false;
-
+                
                 [JsonProperty("Spawn Time")]
                 public float SpawnTime = 19.8f;
-
+                
                 [JsonProperty("Destroy Time")]
                 public float DestroyTime = 7.3f;
                 
                 [JsonProperty("Spawn near players")]
                 public bool SpawnNearPlayers = false;
-
+                
                 [JsonProperty("Min pop for near player spawn")]
                 public int MinNearPlayers = 10;
-
+                
                 [JsonProperty("Min distance from player")]
                 public float MinDistance = 40;
-
+                
                 [JsonProperty("Max distance from player")]
                 public float MaxDistance = 80f;
-
+                
                 [JsonProperty("Zombie Settings")]
                 public ZombieSettings Zombies = new ZombieSettings();
-
+                
                 public class ZombieSettings
                 {
                     [JsonProperty("Display Name")] 
@@ -597,14 +605,14 @@ namespace Oxide.Plugins
                     
                     [JsonProperty("Scarecrow Health")]
                     public float Health = 200f;
-
+                    
                     [JsonProperty("Scarecrow Kits")]
                     public List<string> Kits = new List<string>();
                 }
-
+                
                 [JsonProperty("Chance Settings")]
                 public ChanceSetings Chance = new ChanceSetings();
-
+                
                 public class ChanceSetings
                 {
                     [JsonProperty("Chance per cycle")]
@@ -614,7 +622,7 @@ namespace Oxide.Plugins
                     public int Days = 0;
                 }
             }
-
+            
             public class DestroySettings
             {
                 [JsonProperty("Leave Corpse, when destroyed")]
@@ -622,39 +630,39 @@ namespace Oxide.Plugins
                 
                 [JsonProperty("Leave Corpse, when killed by player")]
                 public bool LeaveCorpseKilled = true;
-
+                
                 [JsonProperty("Spawn Loot")]
                 public bool SpawnLoot = true;
-
+                
                 [JsonProperty("Half bodybag despawn time")]
                 public bool HalfBodybagDespawn = true;
             }
-
+            
             public class BehaviourSettings
             {
                 [JsonProperty("Attack sleeping players")]
                 public bool AttackSleepers = false;
-
+                
                 [JsonProperty("Zombies attacked by outpost sentries")]
                 public bool SentriesAttackZombies = true;
                 
                 [JsonProperty("Throw Grenades")]
                 public bool ThrowGrenades = true;
-
+                
                 [JsonProperty("Ignore Human NPCs")]
                 public bool IgnoreHumanNpc = true;
-
+                
                 [JsonProperty("Ignored entities (full entity shortname)")]
                 public List<string> Ignored = new List<string>();
             }
-
+            
             public class ChatSettings
             {
                 [JsonProperty("Broadcast spawn amount")]
                 public bool DoBroadcast = false;
             }
         }
-
+        
         protected override void LoadConfig()
         {
             base.LoadConfig();
@@ -662,7 +670,7 @@ namespace Oxide.Plugins
             {
                 _config = Config.ReadObject<Configuration>();
                 if (_config == null) throw new Exception();
-
+                
                 if (_config.Spawn.SpawnTime >= 0 && _config.Spawn.DestroyTime >= 0)
                 {
                     if (_config.Spawn.SpawnTime > 24 || _config.Spawn.SpawnTime < 0)
@@ -676,7 +684,7 @@ namespace Oxide.Plugins
                         _config.Spawn.DestroyTime = 7f;
                     }
                 }
-
+                
                 SaveConfig();
             }
             catch
@@ -685,7 +693,7 @@ namespace Oxide.Plugins
                 LoadDefaultConfig();
             }
         }
-
+        
         protected override void LoadDefaultConfig() => _config = new Configuration
         {
             Behaviour = new Configuration.BehaviourSettings
@@ -697,13 +705,13 @@ namespace Oxide.Plugins
                 }
             }
         };
-
+        
         protected override void SaveConfig() => Config.WriteObject(_config);
-
+        
         #endregion
-
+        
         #region -Localisation-
-
+        
         private string GetMessage(string key, string userId = null)
         {
             return lang.GetMessage(key, this, userId);
@@ -717,7 +725,7 @@ namespace Oxide.Plugins
                 ["ChatBroadcastSeparate"] = "[Night Zombies] Spawned {0} murderers | Spawned {1} scarecrows"
             }, this);
         }
-
+        
         #endregion
     }
 }
