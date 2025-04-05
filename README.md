@@ -63,6 +63,12 @@
 * **Half body bag despawn time** - Is the despawn time for green loot backpacks halved.
 * **Quick destroy corpses** - Are corpses cleaned up after 10 seconds.
 
+## Permissions
+- **nightzombies.admin**: Allows users to execute the `/forcespawn` chat command.
+- **nightzombies.ignore**: Scarecrows will not attack players with this permission.
+## Chat Commands
+- **/forcespawn**: Forces an immediate zombie spawn.
+
 ### Behaviour Settings
 
 * **Zombies attacked by outpost sentries** - Are zombies attacked by the sentries at safezones.
