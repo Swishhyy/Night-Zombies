@@ -13,7 +13,7 @@ using Newtonsoft.Json;
 
 namespace Oxide.Plugins
 {
-    [Info("Night Zombies", "0x89A", "4.1.0")]
+    [Info("Night Zombies", "0x89A", "4.1.1")]
     [Description("Spawns and kills zombies at set times")]
     class NightZombies : RustPlugin
     {
@@ -674,7 +674,7 @@ namespace Oxide.Plugins
                 new Configuration.SpawnWave
                 {
                     WaveName = "Night Wave",
-                    Spawn Time = 19.8f,
+                    SpawnTime = 19.8f,
                     DestroyTime = 7.3f,
                     SpawnNearPlayers = true,
                     MinNearPlayers = 10,
