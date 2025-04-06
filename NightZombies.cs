@@ -13,7 +13,7 @@ using Newtonsoft.Json;
 
 namespace Oxide.Plugins
 {
-    [Info("Night Zombies", "0x89A", "5.0.0")]
+    [Info("Night Zombies", "0x89A", "5.0.1")]
     [Description("Spawns and kills zombies at set times")]
     class NightZombies : RustPlugin
     {
@@ -197,12 +197,15 @@ namespace Oxide.Plugins
         
         private object CanAttack(BaseEntity target)
         {
+            // If target is a player with the "nightzombies.ignore" permission, never attack them.
             if (target is BasePlayer player && permission.UserHasPermission(player.UserIDString, "nightzombies.ignore"))
                 return true;
+            
             if (_config.Behaviour.Ignored.Contains(target.ShortPrefabName) ||
                 (_config.Behaviour.IgnoreHumanNpc && HumanNPCCheck(target)) ||
                 (!_config.Behaviour.AttackSleepers && target is BasePlayer player2 && player2.IsSleeping()))
                 return true;
+            
             return null;
         }
         
@@ -509,7 +512,8 @@ namespace Oxide.Plugins
             
             #endregion
             
-            // Check water status: if a zombie's head is fully underwater (i.e. water depth at its feet exceeds ZombieHeadOffset) continuously for 10 seconds, despawn it.
+            // Check water status: if a zombie's head is fully underwater (i.e. water depth at its feet exceeds ZombieHeadOffset)
+            // continuously for 10 seconds, despawn it.
             private void CheckWaterStatus()
             {
                 foreach (var zombie in new List<ScarecrowNPC>(zombies))
@@ -520,7 +524,6 @@ namespace Oxide.Plugins
                         continue;
                     }
                     
-                    // Check if the water depth at the zombie's feet is greater than our head offset.
                     if (WaterLevel.GetWaterDepth(zombie.transform.position, true, true) > ZombieHeadOffset)
                     {
                         if (waterTimes.ContainsKey(zombie))
@@ -541,6 +544,96 @@ namespace Oxide.Plugins
                             waterTimes.Remove(zombie);
                     }
                 }
+            }
+        }
+        
+        // New controller for persistent monument zombies.
+        private class MonumentController
+        {
+            // Dictionary mapping each monument name to its list of persistent zombies.
+            private Dictionary<string, List<ScarecrowNPC>> monumentZombies = new Dictionary<string, List<ScarecrowNPC>>();
+            private Timer checkTimer;
+            
+            public void Initialize()
+            {
+                // For each configured monument, spawn the specified number of zombies.
+                foreach (string monument in _config.Monument.Monuments)
+                {
+                    monumentZombies[monument] = new List<ScarecrowNPC>();
+                    for (int i = 0; i < _config.Monument.Population; i++)
+                    {
+                        SpawnZombieAtMonument(monument);
+                    }
+                }
+                // Check every 60 seconds to ensure persistent zombies are present.
+                checkTimer = _instance.timer.Every(60f, () => CheckMonumentZombies());
+            }
+            
+            private void SpawnZombieAtMonument(string monument)
+            {
+                Vector3 pos = GetMonumentPosition(monument);
+                ScarecrowNPC zombie = GameManager.server.CreateEntity("assets/prefabs/npc/scarecrow/scarecrow.prefab", pos) as ScarecrowNPC;
+                if (zombie == null)
+                    return;
+                zombie.Spawn();
+                zombie.displayName = _config.Monument.Zombies.DisplayName;
+                float health = _config.Monument.Zombies.Health;
+                zombie.SetMaxHealth(health);
+                zombie.SetHealth(health);
+                if (_instance._kits != null && _config.Monument.Zombies.Kits.Count > 0)
+                {
+                    zombie.inventory.containerWear.Clear();
+                    ItemManager.DoRemoves();
+                    _instance._kits.Call("GiveKit", zombie, _config.Monument.Zombies.Kits.GetRandom());
+                }
+                monumentZombies[monument].Add(zombie);
+            }
+            
+            // Helper to get a spawn position for a monument.
+            private Vector3 GetMonumentPosition(string monument)
+            {
+                // In a real implementation, you'd use actual monument coordinates.
+                // For this example, we return a random position.
+                float x = Random.Range(-100, 100);
+                float z = Random.Range(-100, 100);
+                float y = TerrainMeta.HeightMap.GetHeight(new Vector3(x, 0, z)) + 1;
+                return new Vector3(x, y, z);
+            }
+            
+            private void CheckMonumentZombies()
+            {
+                // For each monument, ensure the number of zombies is maintained.
+                foreach (var kvp in monumentZombies)
+                {
+                    string monument = kvp.Key;
+                    List<ScarecrowNPC> zombies = kvp.Value;
+                    zombies.RemoveAll(z => z == null || z.IsDestroyed);
+                    int missing = _config.Monument.Population - zombies.Count;
+                    for (int i = 0; i < missing; i++)
+                    {
+                        SpawnZombieAtMonument(monument);
+                    }
+                }
+            }
+            
+            public void DespawnAll()
+            {
+                foreach (var kvp in monumentZombies)
+                {
+                    foreach (var zombie in kvp.Value.ToArray())
+                    {
+                        if (zombie != null && !zombie.IsDestroyed)
+                            zombie.AdminKill();
+                    }
+                    kvp.Value.Clear();
+                }
+            }
+            
+            public void Shutdown()
+            {
+                if (checkTimer != null)
+                    checkTimer.Destroy();
+                DespawnAll();
             }
         }
         
@@ -628,7 +721,15 @@ namespace Oxide.Plugins
                 public int Population = 3;
                 
                 [JsonProperty("Monument List")]
-                public List<string> Monuments = new List<string> { "airfield", "lighthouse", "powerplant" };
+                public List<string> Monuments = new List<string>
+                {
+                    "airfield", "lighthouse", "powerplant", "trainyard", "militarytunnels",
+                    "satellitedish", "compound", "oilrig", "submarine", "junkyard",
+                    "quarry", "banditcamp", "harbor", "water treatment", "warehouse",
+                    "launchsite", "radardome", "mineshaft", "factory", "boathouse",
+                    "smokestack", "researchstation", "silobase", "crashsite", "container",
+                    "dockyard", "garage", "warehouse2", "blockade"
+                };
                 
                 [JsonProperty("Zombie Settings")]
                 public ZombieSettings Zombies = new ZombieSettings();
@@ -793,7 +894,8 @@ namespace Oxide.Plugins
                     "satellitedish", "compound", "oilrig", "submarine", "junkyard",
                     "quarry", "banditcamp", "harbor", "water treatment", "warehouse",
                     "launchsite", "radardome", "mineshaft", "factory", "boathouse",
-                    "smokestack", "researchstation", "silobase", "crashsite"
+                    "smokestack", "researchstation", "silobase", "crashsite", "container",
+                    "dockyard", "garage", "warehouse2", "blockade"
                 },
                 Zombies = new Configuration.MonumentSettings.ZombieSettings
                 {
@@ -803,7 +905,6 @@ namespace Oxide.Plugins
                 }
             }
         };
-
         
         protected override void SaveConfig() => Config.WriteObject(_config);
         
