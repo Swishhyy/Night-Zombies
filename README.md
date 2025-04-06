@@ -1,5 +1,5 @@
 ## Configuration
-
+WARNING: Requires Rustkits to function
 ### Spawn Settings
 * **Spawn near players** - Do zombies spawn near players (randomly chosen). If false, zombies will spawn randomly around the map.
 * **Min pop for near player spawn** - The minimum number of players on the server required for zombies to spawn near players.

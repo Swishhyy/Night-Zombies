@@ -13,7 +13,7 @@ using Newtonsoft.Json;
 
 namespace Oxide.Plugins
 {
-    [Info("Night Zombies", "0x89A", "5.0.1")]
+    [Info("Night Zombies", "0x89A", "5.0.2")]
     [Description("Spawns and kills zombies at set times")]
     class NightZombies : RustPlugin
     {
@@ -33,7 +33,7 @@ namespace Oxide.Plugins
         
         // The top-level spawn controller now manages multiple spawn wave controllers.
         private SpawnController _spawnController;
-        // New persistent (monument) zombie controller.
+        // Persistent (monument) zombie controller.
         private MonumentController _monumentController;
         
         #region -Init-
@@ -344,8 +344,10 @@ namespace Oxide.Plugins
                     yield break;
                 if (_currentCoroutine != null)
                     ServerMgr.Instance.StopCoroutine(_currentCoroutine);
-                foreach (ScarecrowNPC zombie in zombies.ToArray())
+                // Iterate backwards for performance.
+                for (int i = zombies.Count - 1; i >= 0; i--)
                 {
+                    ScarecrowNPC zombie = zombies[i];
                     if (zombie == null || zombie.IsDestroyed)
                         continue;
                     zombie.AdminKill();
@@ -363,12 +365,13 @@ namespace Oxide.Plugins
                     SpawnZombie();
                 _instance.timer.Once(600f, () =>
                 {
-                    foreach (ScarecrowNPC zombie in zombies.ToArray())
+                    for (int i = zombies.Count - 1; i >= 0; i--)
                     {
+                        ScarecrowNPC zombie = zombies[i];
                         if (zombie != null && !zombie.IsDestroyed)
                         {
                             zombie.AdminKill();
-                            zombies.Remove(zombie);
+                            zombies.RemoveAt(i);
                         }
                     }
                     _spawned = false;
@@ -379,8 +382,9 @@ namespace Oxide.Plugins
             {
                 if (_currentCoroutine != null)
                     ServerMgr.Instance.StopCoroutine(_currentCoroutine);
-                foreach (ScarecrowNPC zombie in zombies.ToArray())
+                for (int i = zombies.Count - 1; i >= 0; i--)
                 {
+                    ScarecrowNPC zombie = zombies[i];
                     if (zombie != null && !zombie.IsDestroyed)
                         zombie.AdminKill();
                 }
@@ -516,8 +520,10 @@ namespace Oxide.Plugins
             // continuously for 10 seconds, despawn it.
             private void CheckWaterStatus()
             {
-                foreach (var zombie in new List<ScarecrowNPC>(zombies))
+                // Iterate backwards to avoid allocation.
+                for (int i = zombies.Count - 1; i >= 0; i--)
                 {
+                    ScarecrowNPC zombie = zombies[i];
                     if (zombie == null || zombie.IsDestroyed)
                     {
                         waterTimes.Remove(zombie);
@@ -534,7 +540,7 @@ namespace Oxide.Plugins
                         if (waterTimes[zombie] >= 10f)
                         {
                             zombie.AdminKill();
-                            zombies.Remove(zombie);
+                            zombies.RemoveAt(i);
                             waterTimes.Remove(zombie);
                         }
                     }
@@ -607,7 +613,12 @@ namespace Oxide.Plugins
                 {
                     string monument = kvp.Key;
                     List<ScarecrowNPC> zombies = kvp.Value;
-                    zombies.RemoveAll(z => z == null || z.IsDestroyed);
+                    // Remove null or destroyed zombies.
+                    for (int i = zombies.Count - 1; i >= 0; i--)
+                    {
+                        if (zombies[i] == null || zombies[i].IsDestroyed)
+                            zombies.RemoveAt(i);
+                    }
                     int missing = _config.Monument.Population - zombies.Count;
                     for (int i = 0; i < missing; i++)
                     {
