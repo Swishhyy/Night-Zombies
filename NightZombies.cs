@@ -13,7 +13,7 @@ using Newtonsoft.Json;
 
 namespace Oxide.Plugins
 {
-    [Info("Night Zombies", "0x89A", "4.1.1")]
+    [Info("Night Zombies", "0x89A", "5.0.0")]
     [Description("Spawns and kills zombies at set times")]
     class NightZombies : RustPlugin
     {
@@ -31,8 +31,10 @@ namespace Oxide.Plugins
         [PluginReference("Vanish")]
         private Plugin _vanish;
         
-        // The top-level spawn controller now manages multiple spawn wave controllers
+        // The top-level spawn controller now manages multiple spawn wave controllers.
         private SpawnController _spawnController;
+        // New persistent (monument) zombie controller.
+        private MonumentController _monumentController;
         
         #region -Init-
         
@@ -44,10 +46,11 @@ namespace Oxide.Plugins
             permission.RegisterPermission("nightzombies.admin", this);
             permission.RegisterPermission("nightzombies.ignore", this);
             
-            // Create our multi-wave controller
+            // Create our multi-wave controller and persistent zombie controller.
             _spawnController = new SpawnController();
+            _monumentController = new MonumentController();
             
-            // Read saved number of days since last spawn
+            // Read saved number of days since last spawn.
             _dataFile = Interface.Oxide.DataFileSystem.GetFile("NightZombies-daysSinceSpawn");
             try
             {
@@ -60,34 +63,27 @@ namespace Oxide.Plugins
             }
             
             if (_config.Behaviour.SentriesAttackZombies)
-            {
                 Unsubscribe(nameof(OnTurretTarget));
-            }
-            
             if (_config.Destroy.SpawnLoot)
-            {
                 Unsubscribe(nameof(OnCorpsePopulate));
-            }
-            
             if (_config.Behaviour.Ignored.Count == 0 && !_config.Behaviour.IgnoreHumanNpc && _config.Behaviour.AttackSleepers)
-            {
                 Unsubscribe(nameof(OnNpcTarget));
-            }
         }
         
         private void OnServerInitialized()
         {
             if (!_kits?.IsLoaded ?? false)
-            {
                 PrintWarning("Kits is not loaded, custom kits will not work");
-            }
             
-            // Start time check for each wave
+            // Start time check for each spawn wave.
             if (_config.SpawnWaves != null && _config.SpawnWaves.Count > 0)
             {
                 TOD_Sky.Instance.Components.Time.OnMinute += _spawnController.TimeTick;
                 TOD_Sky.Instance.Components.Time.OnDay += OnDay;
             }
+            
+            // Initialize persistent monument zombies.
+            _monumentController.Initialize();
         }
         
         private void Unload()
@@ -97,6 +93,7 @@ namespace Oxide.Plugins
             
             _dataFile.WriteObject(_spawnController.DaysSinceLastSpawn);
             _spawnController?.Shutdown();
+            _monumentController?.Shutdown();
             
             _config = null;
             _instance = null;
@@ -131,6 +128,7 @@ namespace Oxide.Plugins
             }
             
             _spawnController.DespawnAll();
+            _monumentController.DespawnAll();
             player.ChatMessage("All zombies and corpses have been despawned.");
         }
         
@@ -154,6 +152,7 @@ namespace Oxide.Plugins
         {
             Effect.server.Run(DeathSound, scarecrow.transform.position);
             _spawnController.ZombieDied(scarecrow);
+            // Monument zombies are persistent and handled separately.
             
             if (_config.Destroy.LeaveCorpseKilled)
                 return null;
@@ -174,11 +173,8 @@ namespace Oxide.Plugins
         
         private void OnEntitySpawned(NPCPlayerCorpse corpse)
         {
-            if (corpse.playerName == "Scarecrow")
-            {
-                // Default to first wave's display name
-                corpse.playerName = _config.SpawnWaves[0].Zombies.DisplayName;
-            }
+            // Default to first wave's display name.
+            corpse.playerName = _config.SpawnWaves[0].Zombies.DisplayName;
         }
         
         private void OnEntitySpawned(DroppedItemContainer container)
@@ -201,29 +197,26 @@ namespace Oxide.Plugins
         
         private object CanAttack(BaseEntity target)
         {
-            // If target is a player with the "nightzombies.ignore" permission, never attack them.
             if (target is BasePlayer player && permission.UserHasPermission(player.UserIDString, "nightzombies.ignore"))
                 return true;
-            
             if (_config.Behaviour.Ignored.Contains(target.ShortPrefabName) ||
                 (_config.Behaviour.IgnoreHumanNpc && HumanNPCCheck(target)) ||
                 (!_config.Behaviour.AttackSleepers && target is BasePlayer player2 && player2.IsSleeping()))
                 return true;
-            
             return null;
         }
         
         private bool HumanNPCCheck(BaseEntity target)
         {
-            return target is BasePlayer player && !player.userID.IsSteamId() && target is not ScientistNPC &&
-                   target is not ScarecrowNPC;
+            return target is BasePlayer player && !player.userID.IsSteamId() &&
+                   target is not ScientistNPC && target is not ScarecrowNPC;
         }
         
         #endregion
         
         #region -Classes-
         
-        // Top-level spawn controller managing multiple spawn wave controllers
+        // Top-level spawn controller managing multiple spawn wave controllers.
         private class SpawnController
         {
             public int DaysSinceLastSpawn;
@@ -231,10 +224,8 @@ namespace Oxide.Plugins
             
             public SpawnController()
             {
-                // If no waves defined, create a default wave.
                 if (_config.SpawnWaves == null || _config.SpawnWaves.Count == 0)
                     _config.SpawnWaves = new List<Configuration.SpawnWave> { new Configuration.SpawnWave() };
-                
                 foreach (var wave in _config.SpawnWaves)
                 {
                     waveControllers.Add(new SpawnWaveController(wave));
@@ -275,7 +266,7 @@ namespace Oxide.Plugins
             }
         }
         
-        // Controller for a single spawn wave
+        // Controller for a single spawn wave.
         private class SpawnWaveController
         {
             private readonly Configuration.SpawnWave waveConfig;
@@ -285,16 +276,16 @@ namespace Oxide.Plugins
             private Coroutine _currentCoroutine;
             private readonly List<ScarecrowNPC> zombies = new List<ScarecrowNPC>();
             
-            // Constant representing the approximate head offset (zombie height) for full submersion.
-            private const float ZombieHeadOffset = 1.8f;
             // Dictionary to track how long each zombie has been fully submerged.
             private Dictionary<ScarecrowNPC, float> waterTimes = new Dictionary<ScarecrowNPC, float>();
+            // Timer to check water status every second.
             private Timer waterTimer;
+            // Head offset used to determine if a zombie is fully underwater.
+            private const float ZombieHeadOffset = 1.8f;
             
             public SpawnWaveController(Configuration.SpawnWave config)
             {
                 waveConfig = config;
-                // Start a repeating timer to check water status every second.
                 waterTimer = _instance.timer.Every(1f, () => CheckWaterStatus());
             }
             
@@ -328,13 +319,9 @@ namespace Oxide.Plugins
             public void TimeTick()
             {
                 if (CanSpawn() && IsSpawnTime)
-                {
                     _currentCoroutine = ServerMgr.Instance.StartCoroutine(SpawnZombies());
-                }
                 else if (zombies.Count > 0 && IsDestroyTime && _spawned)
-                {
                     _currentCoroutine = ServerMgr.Instance.StartCoroutine(RemoveZombies());
-                }
             }
             
             private IEnumerator SpawnZombies()
@@ -352,10 +339,8 @@ namespace Oxide.Plugins
             {
                 if (zombies.Count == 0)
                     yield break;
-                
                 if (_currentCoroutine != null)
                     ServerMgr.Instance.StopCoroutine(_currentCoroutine);
-                
                 foreach (ScarecrowNPC zombie in zombies.ToArray())
                 {
                     if (zombie == null || zombie.IsDestroyed)
@@ -373,7 +358,6 @@ namespace Oxide.Plugins
                 _spawned = true;
                 for (int i = 0; i < waveConfig.Zombies.Population; i++)
                     SpawnZombie();
-                
                 _instance.timer.Once(600f, () =>
                 {
                     foreach (ScarecrowNPC zombie in zombies.ToArray())
@@ -392,7 +376,6 @@ namespace Oxide.Plugins
             {
                 if (_currentCoroutine != null)
                     ServerMgr.Instance.StopCoroutine(_currentCoroutine);
-                
                 foreach (ScarecrowNPC zombie in zombies.ToArray())
                 {
                     if (zombie != null && !zombie.IsDestroyed)
@@ -427,42 +410,34 @@ namespace Oxide.Plugins
             {
                 if (zombies.Count >= waveConfig.Zombies.Population)
                     return;
-                
                 Vector3 position = (waveConfig.SpawnNearPlayers && BasePlayer.activePlayerList.Count >= waveConfig.MinNearPlayers && GetRandomPlayer(out BasePlayer player))
                     ? GetRandomPositionAroundPlayer(player)
                     : GetRandomPosition();
-                
                 ScarecrowNPC zombie = GameManager.server.CreateEntity("assets/prefabs/npc/scarecrow/scarecrow.prefab", position) as ScarecrowNPC;
                 if (zombie == null)
                     return;
-                
                 zombie.Spawn();
                 zombie.displayName = waveConfig.Zombies.DisplayName;
-                
                 if (zombie.TryGetComponent(out BaseNavigator navigator))
                 {
                     navigator.ForceToGround();
                     navigator.PlaceOnNavMesh(0);
                 }
-                
                 float health = waveConfig.Zombies.Health;
                 zombie.SetMaxHealth(health);
                 zombie.SetHealth(health);
-                
                 if (_instance._kits != null && waveConfig.Zombies.Kits.Count > 0)
                 {
                     zombie.inventory.containerWear.Clear();
                     ItemManager.DoRemoves();
                     _instance._kits.Call("GiveKit", zombie, waveConfig.Zombies.Kits.GetRandom());
                 }
-                
                 if (!_config.Behaviour.ThrowGrenades)
                 {
                     foreach (Item item in zombie.inventory.FindItemsByItemID(GrenadeItemId))
                         item.Remove();
                     ItemManager.DoRemoves();
                 }
-                
                 zombies.Add(zombie);
             }
             
@@ -534,7 +509,7 @@ namespace Oxide.Plugins
             
             #endregion
             
-            // New method to check water status for all zombies in this wave.
+            // Check water status: if a zombie's head is fully underwater (i.e. water depth at its feet exceeds ZombieHeadOffset) continuously for 10 seconds, despawn it.
             private void CheckWaterStatus()
             {
                 foreach (var zombie in new List<ScarecrowNPC>(zombies))
@@ -545,21 +520,14 @@ namespace Oxide.Plugins
                         continue;
                     }
                     
-                    // Check if the zombie is fully submerged:
-                    // We assume the zombie's feet are at zombie.transform.position.
-                    // If the water depth at that position is greater than our head offset, the zombie is entirely underwater.
+                    // Check if the water depth at the zombie's feet is greater than our head offset.
                     if (WaterLevel.GetWaterDepth(zombie.transform.position, true, true) > ZombieHeadOffset)
                     {
                         if (waterTimes.ContainsKey(zombie))
-                        {
                             waterTimes[zombie] += 1f;
-                        }
                         else
-                        {
                             waterTimes[zombie] = 1f;
-                        }
                         
-                        // If in water for 10 seconds, despawn the zombie.
                         if (waterTimes[zombie] >= 10f)
                         {
                             zombie.AdminKill();
@@ -569,7 +537,6 @@ namespace Oxide.Plugins
                     }
                     else
                     {
-                        // Reset the water timer if not fully submerged.
                         if (waterTimes.ContainsKey(zombie))
                             waterTimes.Remove(zombie);
                     }
@@ -585,6 +552,9 @@ namespace Oxide.Plugins
         {
             [JsonProperty("Spawn Waves")]
             public List<SpawnWave> SpawnWaves = new List<SpawnWave>();
+            
+            [JsonProperty("Monument Settings")]
+            public MonumentSettings Monument = new MonumentSettings();
             
             [JsonProperty("Destroy Settings")]
             public DestroySettings Destroy = new DestroySettings();
@@ -649,6 +619,30 @@ namespace Oxide.Plugins
                     
                     [JsonProperty("Days betewen spawn")]
                     public int Days = 0;
+                }
+            }
+            
+            public class MonumentSettings
+            {
+                [JsonProperty("Monument Zombie Population")]
+                public int Population = 3;
+                
+                [JsonProperty("Monument List")]
+                public List<string> Monuments = new List<string> { "airfield", "lighthouse", "powerplant" };
+                
+                [JsonProperty("Zombie Settings")]
+                public ZombieSettings Zombies = new ZombieSettings();
+                
+                public class ZombieSettings
+                {
+                    [JsonProperty("Display Name")]
+                    public string DisplayName = "Monument Zombie";
+                    
+                    [JsonProperty("Scarecrow Health")]
+                    public float Health = 300f;
+                    
+                    [JsonProperty("Scarecrow Kits")]
+                    public List<string> Kits = new List<string> { "monumentkit" };
                 }
             }
             
@@ -789,8 +783,27 @@ namespace Oxide.Plugins
                         Days = 0
                     }
                 }
+            },
+            Monument = new Configuration.MonumentSettings
+            {
+                Population = 3,
+                Monuments = new List<string>
+                {
+                    "airfield", "lighthouse", "powerplant", "trainyard", "militarytunnels",
+                    "satellitedish", "compound", "oilrig", "submarine", "junkyard",
+                    "quarry", "banditcamp", "harbor", "water treatment", "warehouse",
+                    "launchsite", "radardome", "mineshaft", "factory", "boathouse",
+                    "smokestack", "researchstation", "silobase", "crashsite"
+                },
+                Zombies = new Configuration.MonumentSettings.ZombieSettings
+                {
+                    DisplayName = "Monument Zombie",
+                    Health = 300f,
+                    Kits = new List<string> { "monumentkit" }
+                }
             }
         };
+
         
         protected override void SaveConfig() => Config.WriteObject(_config);
         
