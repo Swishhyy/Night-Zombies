@@ -185,7 +185,6 @@ namespace Oxide.Plugins
         {
             if (!_config.Destroy.HalfBodybagDespawn)
                 return;
-            
             NextTick(() =>
             {
                 if (container != null && container.playerName == _config.SpawnWaves[0].Zombies.DisplayName)
@@ -286,9 +285,17 @@ namespace Oxide.Plugins
             private Coroutine _currentCoroutine;
             private readonly List<ScarecrowNPC> zombies = new List<ScarecrowNPC>();
             
+            // Constant representing the approximate head offset (zombie height) for full submersion.
+            private const float ZombieHeadOffset = 1.8f;
+            // Dictionary to track how long each zombie has been fully submerged.
+            private Dictionary<ScarecrowNPC, float> waterTimes = new Dictionary<ScarecrowNPC, float>();
+            private Timer waterTimer;
+            
             public SpawnWaveController(Configuration.SpawnWave config)
             {
                 waveConfig = config;
+                // Start a repeating timer to check water status every second.
+                waterTimer = _instance.timer.Every(1f, () => CheckWaterStatus());
             }
             
             private bool IsSpawnTime
@@ -409,6 +416,8 @@ namespace Oxide.Plugins
             
             public void Shutdown()
             {
+                if (waterTimer != null)
+                    waterTimer.Destroy();
                 ServerMgr.Instance.StartCoroutine(RemoveZombies(true));
             }
             
@@ -419,8 +428,7 @@ namespace Oxide.Plugins
                 if (zombies.Count >= waveConfig.Zombies.Population)
                     return;
                 
-                Vector3 position = (waveConfig.SpawnNearPlayers && BasePlayer.activePlayerList.Count >= waveConfig.MinNearPlayers &&
-                                     GetRandomPlayer(out BasePlayer player))
+                Vector3 position = (waveConfig.SpawnNearPlayers && BasePlayer.activePlayerList.Count >= waveConfig.MinNearPlayers && GetRandomPlayer(out BasePlayer player))
                     ? GetRandomPositionAroundPlayer(player)
                     : GetRandomPosition();
                 
@@ -525,6 +533,48 @@ namespace Oxide.Plugins
             }
             
             #endregion
+            
+            // New method to check water status for all zombies in this wave.
+            private void CheckWaterStatus()
+            {
+                foreach (var zombie in new List<ScarecrowNPC>(zombies))
+                {
+                    if (zombie == null || zombie.IsDestroyed)
+                    {
+                        waterTimes.Remove(zombie);
+                        continue;
+                    }
+                    
+                    // Check if the zombie is fully submerged:
+                    // We assume the zombie's feet are at zombie.transform.position.
+                    // If the water depth at that position is greater than our head offset, the zombie is entirely underwater.
+                    if (WaterLevel.GetWaterDepth(zombie.transform.position, true, true) > ZombieHeadOffset)
+                    {
+                        if (waterTimes.ContainsKey(zombie))
+                        {
+                            waterTimes[zombie] += 1f;
+                        }
+                        else
+                        {
+                            waterTimes[zombie] = 1f;
+                        }
+                        
+                        // If in water for 10 seconds, despawn the zombie.
+                        if (waterTimes[zombie] >= 10f)
+                        {
+                            zombie.AdminKill();
+                            zombies.Remove(zombie);
+                            waterTimes.Remove(zombie);
+                        }
+                    }
+                    else
+                    {
+                        // Reset the water timer if not fully submerged.
+                        if (waterTimes.ContainsKey(zombie))
+                            waterTimes.Remove(zombie);
+                    }
+                }
+            }
         }
         
         #endregion
